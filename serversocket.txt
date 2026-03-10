@@ -1,0 +1,91 @@
+package ma.ChriOnline;
+
+import java.io.*;
+import java.net.*;
+import java.sql.*;
+
+public class Server_Socket {
+
+    public static void main(String[] args) throws Exception {
+
+        ServerSocket serverSocket = new ServerSocket(7023);
+        System.out.println("Server started...");
+
+        while (true) {
+
+            Socket socket = serverSocket.accept();
+            System.out.println("Client connected");
+
+            BufferedReader in = new BufferedReader(
+                    new InputStreamReader(socket.getInputStream()));
+
+            DataOutputStream out =
+                    new DataOutputStream(socket.getOutputStream());
+
+            String message = in.readLine();
+            String response = "";
+
+            // Connexion à la base de données
+            Connection conn = DriverManager.getConnection(
+                    "jdbc:mysql://localhost:3306/chrionline",
+                    "root",
+                    ""
+            );
+
+            if (message.equals("LIST_PRODUCTS")) {
+
+                Statement stmt = conn.createStatement();
+                ResultSet rs = stmt.executeQuery("SELECT * FROM products");
+
+                while (rs.next()) {
+
+                    int id = rs.getInt("id");
+                    String name = rs.getString("name");
+                    double price = rs.getDouble("price");
+
+                    out.writeBytes(id + " " + name + " " + price + "\n");
+                }
+
+            }
+
+            else if (message.startsWith("LOGIN")) {
+
+                // message = LOGIN username password
+                String[] parts = message.split(" ");
+
+                String username = parts[1];
+                String password = parts[2];
+
+                String query = "INSERT INTO users(username,password) VALUES(?,?)";
+
+                PreparedStatement ps = conn.prepareStatement(query);
+
+                ps.setString(1, username);
+                ps.setString(2, password);
+
+                ps.executeUpdate();
+
+                response = "User saved in database\n";
+
+                out.writeBytes(response);
+            }
+
+            else if (message.startsWith("ADD_CART")) {
+
+                response = "Product added to cart\n";
+                out.writeBytes(response);
+
+            }
+
+            else {
+
+                response = "Unknown command\n";
+                out.writeBytes(response);
+
+            }
+
+            conn.close();
+            socket.close();
+        }
+    }
+}
