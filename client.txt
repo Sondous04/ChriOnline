@@ -1,0 +1,45 @@
+package ma.ChriOnline;
+
+import java.io.*;
+import java.net.*;
+import java.util.Scanner;
+
+public class ClientEcommerce {
+    public static void main(String[] args) {
+        String host = "localhost";
+        int port = 5000;
+
+        try (Socket socket = new Socket(host, port);
+             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+             BufferedWriter out = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
+             Scanner scanner = new Scanner(System.in)) {
+
+            System.out.println("Connecté au serveur e-commerce...");
+
+            boolean running = true;
+            while (running) {
+                System.out.println("\nEntrez une commande: REGISTER, LOGIN, LIST_PRODUCTS, ADD_CART, VIEW_CART, ORDER, PAY, QUIT");
+                String command = scanner.nextLine();
+                
+                // Envoyer la commande au serveur
+                out.write(command + "\n");
+                out.flush();
+
+                // Lire la réponse
+                String response;
+                while ((response = in.readLine()) != null) {
+                    if (response.equals("END")) break; // pour LIST_PRODUCTS ou VIEW_CART
+                    System.out.println(response);
+                    if (response.startsWith("SUCCESS") || response.startsWith("ERROR") || response.equals("Déconnexion...")) break;
+                }
+
+                if (command.equalsIgnoreCase("QUIT")) running = false;
+            }
+
+            System.out.println("Client terminé");
+
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+}
