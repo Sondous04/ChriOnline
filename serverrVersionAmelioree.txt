@@ -1,0 +1,328 @@
+package ma.ChriOnline;
+
+import java.io.*;
+import java.net.*;
+import java.sql.*;
+import java.util.*;
+
+// --- Class Produit ---
+class Produit {
+    private int id;
+    private String nom;
+    private double prix;
+    private int stock;
+
+    public Produit(int id, String nom, double prix, int stock) {
+        this.id = id;
+        this.nom = nom;
+        this.prix = prix;
+        this.stock = stock;
+    }
+
+    public int getId() { return id; }
+    public String getNom() { return nom; }
+    public double getPrix() { return prix; }
+    public int getStock() { return stock; }
+    public void setStock(int stock) { this.stock = stock; }
+
+    @Override
+    public String toString() {
+        return id + "|" + nom + "|" + prix + "|" + stock;
+    }
+}
+
+// --- Class Panier ---
+class Panier {
+    private List<Produit> produits = new ArrayList<>();
+    private String orderId = null;
+
+    public void ajouter(Produit p) { produits.add(p); }
+    public boolean supprimer(int produitId) { return produits.removeIf(p -> p.getId() == produitId); }
+
+    public void vider() {
+        produits.clear();
+        orderId = null;
+    }
+
+    public List<Produit> getProduits() { return produits; }
+
+    public double total() {
+        return produits.stream().mapToDouble(Produit::getPrix).sum();
+    }
+
+    public String getOrderId() { return orderId; }
+
+    public void setOrderId(String id) {
+        orderId = id;
+    }
+}
+
+// --- DatabaseConnection ---
+class DatabaseConnection {
+    public static Connection getConnection() {
+        Connection conn = null;
+        try {
+            String url = "jdbc:mysql://localhost:3306/chrionline?useSSL=false&serverTimezone=UTC";
+            String user = "root";
+            String password = ""; // ضع الباسورد ديال MySQL إذا عندك
+            conn = DriverManager.getConnection(url, user, password);
+            System.out.println("✔ Connected to database");
+        } catch (SQLException e) {
+            System.out.println("❌ Erreur DB: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return conn;
+    }
+}
+
+// --- Serveur Principal ---
+public class ServeurEcommerce {
+    private static List<Produit> produits = new ArrayList<>();
+
+    public static void main(String[] args) {
+        try {
+            loadProducts();
+        } catch (Exception e) {
+            System.out.println("❌ Erreur lors du chargement des produits: " + e.getMessage());
+        }
+
+        try (ServerSocket server = new ServerSocket(5000)) {
+            System.out.println("✔ Serveur démarré sur le port 5000...");
+            while (true) {
+                Socket socket = server.accept();
+                System.out.println("Client connecté: " + socket.getInetAddress());
+                new Thread(() -> handleClient(socket)).start();
+            }
+        } catch (IOException e) {
+            System.out.println("❌ Erreur serveur: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private static void loadProducts() {
+        try (Connection conn = DatabaseConnection.getConnection()) {
+            if (conn == null) { System.out.println("❌ Connexion null"); return; }
+
+            try (Statement stmt = conn.createStatement();
+                 ResultSet rs = stmt.executeQuery("SELECT * FROM products")) {
+
+                produits.clear();
+                while (rs.next()) {
+                    produits.add(new Produit(
+                            rs.getInt("id"),
+                            rs.getString("name"),
+                            rs.getDouble("price"),
+                            rs.getInt("stock")
+                    ));
+                }
+                System.out.println("✔ " + produits.size() + " produits chargés");
+
+            } catch (SQLException e) {
+                System.out.println("❌ Erreur SQL lors du chargement produits: " + e.getMessage());
+                e.printStackTrace();
+            }
+        } catch (Exception e) {
+            System.out.println("❌ Exception loadProducts: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private static void handleClient(Socket socket) {
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+             BufferedWriter out = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()))) {
+
+            Panier panier = new Panier();
+            Integer userId = null;
+            String message;
+
+            while ((message = in.readLine()) != null) {
+                String response = "";
+                String[] parts = message.split(" ");
+
+                try {
+                    switch (parts[0].toUpperCase()) {
+                        case "REGISTER":
+                            if (parts.length < 3) { response = "ERROR Format: REGISTER username password"; break; }
+                            userId = handleRegister(parts[1], parts[2]);
+                            response = (userId != null) ? "SUCCESS Inscription réussie" : "ERROR Utilisateur existe déjà";
+                            break;
+
+                        case "LOGIN":
+                            if (parts.length < 3) { response = "ERROR Format: LOGIN username password"; break; }
+                            userId = handleLogin(parts[1], parts[2]);
+                            response = (userId != null) ? "SUCCESS Login OK" : "ERROR Identifiants incorrects";
+                            break;
+
+                        case "LIST_PRODUCTS":
+                            for (Produit p : produits) out.write(p.toString() + "\n");
+                            out.write("END\n");
+                            out.flush();
+                            continue;
+
+                        case "ADD_CART":
+                            if (parts.length < 2) { response = "ERROR Format: ADD_CART productId"; break; }
+                            int prodId = Integer.parseInt(parts[1]);
+                            Produit prod = produits.stream().filter(p -> p.getId() == prodId).findFirst().orElse(null);
+                            if (prod != null && prod.getStock() > 0) {
+                                panier.ajouter(prod); response = "SUCCESS Produit ajouté au panier";
+                            } else { response = "ERROR Produit indisponible"; }
+                            break;
+                        case "REMOVE_CART":
+                            if (parts.length < 2) { 
+                                response = "ERROR Format: REMOVE_CART productId"; 
+                                break; 
+                            }
+
+                            int removeId = Integer.parseInt(parts[1]);
+
+                            boolean removed = panier.supprimer(removeId);
+
+                            if (removed)
+                                response = "SUCCESS Produit retiré du panier";
+                            else
+                                response = "ERROR Produit non trouvé dans le panier";
+
+                            break;
+
+                        case "VIEW_CART":
+                            if (panier.getProduits().isEmpty()) response = "Panier vide";
+                            else {
+                                StringBuilder sb = new StringBuilder();
+                                for (Produit p : panier.getProduits()) sb.append(p.getNom()).append(" | ").append(p.getPrix()).append("\n");
+                                sb.append("Total: ").append(panier.total()).append("\n");
+                                response = sb.toString();
+                            }
+                            break;
+
+                        case "ORDER":
+                            if (userId == null) { response = "ERROR Connectez-vous d'abord"; break; }
+                            if (panier.getProduits().isEmpty()) { response = "ERROR Panier vide"; break; }
+                            response = handleOrder(userId, panier);
+                            break;
+
+                        case "PAY":
+
+                            if (panier.getOrderId() == null) {
+                                response = "ERROR Vous devez faire ORDER avant PAY";
+                                break;
+                            }
+
+                            response = handlePayment(panier);
+                            break;
+
+                        case "QUIT":
+                            response = "Déconnexion...";
+                            out.write(response + "\n");
+                            out.flush();
+                            socket.close();
+                            return;
+
+                        default: response = "ERROR Commande inconnue";
+                    }
+                } catch (Exception e) {
+                    response = "❌ Exception dans traitement commande: " + e.getMessage();
+                    e.printStackTrace();
+                }
+
+                out.write(response + "\n");
+                out.flush();
+            }
+
+        } catch (IOException e) {
+            System.out.println("❌ Erreur IO client: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private static Integer handleRegister(String username, String password) {
+        try (Connection conn = DatabaseConnection.getConnection()) {
+            if (conn == null) { System.out.println("❌ Connexion null dans REGISTER"); return null; }
+
+            String check = "SELECT * FROM users WHERE username=?";
+            try (PreparedStatement ps = conn.prepareStatement(check)) {
+                ps.setString(1, username);
+                ResultSet rs = ps.executeQuery();
+                if (rs.next()) return null;
+            }
+
+            String insert = "INSERT INTO users(username,password) VALUES(?,?)";
+            try (PreparedStatement ps = conn.prepareStatement(insert, Statement.RETURN_GENERATED_KEYS)) {
+                ps.setString(1, username);
+                ps.setString(2, password);
+                ps.executeUpdate();
+                ResultSet keys = ps.getGeneratedKeys();
+                if (keys.next()) return keys.getInt(1);
+            }
+
+        } catch (SQLException e) {
+            System.out.println("❌ Erreur SQL REGISTER: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    private static Integer handleLogin(String username, String password) {
+        try (Connection conn = DatabaseConnection.getConnection()) {
+            if (conn == null) { System.out.println("❌ Connexion null dans LOGIN"); return null; }
+
+            String query = "SELECT id FROM users WHERE username=? AND password=?";
+            try (PreparedStatement ps = conn.prepareStatement(query)) {
+                ps.setString(1, username);
+                ps.setString(2, password);
+                ResultSet rs = ps.executeQuery();
+                if (rs.next()) return rs.getInt("id");
+            }
+
+        } catch (SQLException e) {
+            System.out.println("❌ Erreur SQL LOGIN: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    private static String handleOrder(int userId, Panier panier) {
+        try (Connection conn = DatabaseConnection.getConnection()) {
+            if (conn == null) return "❌ Connexion null dans ORDER";
+
+            String orderId = UUID.randomUUID().toString();
+            double total = panier.total();
+
+            String insertOrder = "INSERT INTO orders(id,user_id,total,status) VALUES(?,?,?,?)";
+            try (PreparedStatement ps = conn.prepareStatement(insertOrder)) {
+                ps.setString(1, orderId);
+                ps.setInt(2, userId);
+                ps.setDouble(3, total);
+                ps.setString(4, "PENDING");
+                ps.executeUpdate();
+            }
+
+            String insertItem = "INSERT INTO order_items(order_id,product_id,quantity,price) VALUES(?,?,?,?)";
+            for (Produit p : panier.getProduits()) {
+                try (PreparedStatement ps = conn.prepareStatement(insertItem)) {
+                    ps.setString(1, orderId);
+                    ps.setInt(2, p.getId());
+                    ps.setInt(3, 1);
+                    ps.setDouble(4, p.getPrix());
+                    ps.executeUpdate();
+                }
+            }
+
+            
+            panier.setOrderId(orderId);
+
+            return "SUCCESS Commande créée - ID: " + orderId + " | Total: " + total;
+
+        } catch (SQLException e) {
+        	System.out.println("❌ Erreur SQL ORDER: " + e.getMessage());
+            e.printStackTrace();
+            return "ERROR Création commande";
+        }
+    }
+
+    private static String handlePayment(Panier panier) {
+        if (panier.getProduits().isEmpty()) return "ERROR Panier vide";
+        double total = panier.total();
+        panier.vider();
+        return "SUCCESS Paiement simulé effectué: " + total + " DH";
+    }
+}
